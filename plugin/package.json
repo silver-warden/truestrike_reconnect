@@ -1,0 +1,7 @@
+{
+  "name": "lg2-controller-fix",
+  "version": "1.0.1",
+  "type": "module",
+  "description": "Headless watchdog that keeps Legion Go 2 controllers alive across SteamOS updates",
+  "license": "MIT"
+}

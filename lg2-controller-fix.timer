@@ -1,0 +1,11 @@
+[Unit]
+Description=Legion Go 2 controller health check
+After=inputplumber.service
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=60
+AccuracySec=5s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,10 @@
+{
+  "name": "LG2 Controller Fix",
+  "author": "local",
+  "flags": ["root"],
+  "api_version": 1,
+  "publish": {
+    "tags": ["legion", "input"],
+    "description": "Headless self-healing: re-installs the Legion Go 2 controller (InputPlumber) recovery units after SteamOS updates."
+  }
+}

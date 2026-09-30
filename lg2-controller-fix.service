@@ -1,0 +1,8 @@
+[Unit]
+Description=Recover Lenovo Legion Go 2 controllers (InputPlumber virtual gamepad)
+After=inputplumber.service graphical.target
+
+[Service]
+Type=oneshot
+ExecStart=/var/local/bin/lg2-controller-fix.sh
+TimeoutStartSec=6min

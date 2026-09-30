@@ -1,0 +1,5 @@
+#!/bin/bash
+# system-sleep hook: re-run the controller health check after resume too
+# (the same InputPlumber fault can appear after suspend/resume).
+[ "${1:-}" = "post" ] && systemctl start lg2-controller-fix.service
+exit 0
