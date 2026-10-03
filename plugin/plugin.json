@@ -1,6 +1,6 @@
 {
   "name": "LG2 Controller Fix",
-  "author": "local",
+  "author": "silver-warden",
   "flags": ["root"],
   "api_version": 1,
   "publish": {
