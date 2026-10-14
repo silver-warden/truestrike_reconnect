@@ -7,9 +7,14 @@
 # (InputPlumber target churn). This script is run repeatedly by a systemd
 # timer and is cheap+idempotent.
 #
-# Predicate: physical Legion controller attached (USB 17ef:61eb) but NO
-# virtual gamepad (no js handler under /devices/virtual/input/) -> restart
-# InputPlumber after the condition persists across a confirmation re-check.
+# Two recovery paths, both idempotent and bounded by a per-boot budget:
+#  1. Nudge: once per Steam session (new steam pid = cold boot OR a
+#     desktop<->gaming switch), restart InputPlumber so Steam re-enumerates the
+#     gamepad. Steam can miss the virtual gamepad during InputPlumber's target
+#     churn even though the node exists, which the node check below can't see.
+#  2. Missing-node: physical Legion controller attached (USB 17ef:61eb) but NO
+#     virtual gamepad (no js handler under /devices/virtual/input/) persisting
+#     across a confirmation re-check -> restart InputPlumber.
 set -u
 
 TAG=lg2-controller-fix
@@ -18,6 +23,8 @@ log() { logger -t "$TAG" -- "$*"; echo "$*"; }
 STATE_DIR=/run/lg2-fix
 CONFIRM_SLEEP=${LG2_CONFIRM_SLEEP:-12}
 MAX_RESTARTS_PER_BOOT=${LG2_MAX_RESTARTS:-5}
+STEAM_SETTLE=${LG2_STEAM_SETTLE:-15}
+NUDGE_STATE="$STATE_DIR/nudged_pid"
 
 mkdir -p "$STATE_DIR"
 
@@ -44,6 +51,34 @@ virtual_gamepad_present() {
 if ! source_attached; then
   # controllers detached: nothing to do
   exit 0
+fi
+
+# --- once-per-Steam-session nudge -------------------------------------------
+# Steam Input enumerates gamepads when the client (re)starts. InputPlumber's
+# target churn at boot AND on desktop<->gaming switches (xbox-elite -> deck-uhid)
+# can create the virtual gamepad in a window Steam misses, leaving Steam bound
+# to nothing even though the node exists -- which the node-present check below
+# cannot see. Force one fresh add event per new Steam session so it re-
+# enumerates. Each cold boot and each mode switch is a new steam pid, so this
+# covers both. Bounded by the same per-boot budget to survive steam flapping.
+steam_pid() { pgrep -n -u deck -x steam 2>/dev/null; }
+steam_age() { ps -o etimes= -p "$1" 2>/dev/null | tr -d ' '; }
+
+spid=$(steam_pid)
+if [[ -n "$spid" && "$spid" != "$(cat "$NUDGE_STATE" 2>/dev/null)" ]]; then
+  # only nudge once Steam has settled, else it isn't listening yet and we'd
+  # burn the one nudge for this session; skip (without marking) and retry next tick
+  age=$(steam_age "$spid"); age=${age:-999}
+  if (( age >= STEAM_SETTLE )); then
+    nudge_budget=$(cat "$STATE_DIR/restarts" 2>/dev/null || echo 0)
+    if (( nudge_budget < MAX_RESTARTS_PER_BOOT )); then
+      echo "$spid" > "$NUDGE_STATE"
+      echo "$((nudge_budget + 1))" > "$STATE_DIR/restarts"
+      log "Steam session pid $spid (age ${age}s) -> nudging InputPlumber so Steam re-enumerates the gamepad (restart #$((nudge_budget + 1))/$MAX_RESTARTS_PER_BOOT this boot)"
+      systemctl restart inputplumber
+      exit 0
+    fi
+  fi
 fi
 
 if virtual_gamepad_present; then
