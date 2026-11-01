@@ -25,6 +25,9 @@ CONFIRM_SLEEP=${LG2_CONFIRM_SLEEP:-12}
 MAX_RESTARTS_PER_BOOT=${LG2_MAX_RESTARTS:-5}
 STEAM_SETTLE=${LG2_STEAM_SETTLE:-15}
 NUDGE_STATE="$STATE_DIR/nudged_pid"
+RESUME_WINDOW=${LG2_RESUME_WINDOW:-120}
+RESUME_ATTACH_WAIT=${LG2_RESUME_ATTACH_WAIT:-15}
+RESUME_CONFIRM_SLEEP=${LG2_RESUME_CONFIRM_SLEEP:-4}
 
 mkdir -p "$STATE_DIR"
 
@@ -47,6 +50,37 @@ virtual_gamepad_present() {
     END { exit !found }
   ' /proc/bus/input/devices
 }
+
+# Seconds since logind reported a resume completed (0 = never slept this
+# boot). busctl call output: "btttt <succ> <wakeup> <prepare> <sleep> <wake>"
+# with CLOCK_MONOTONIC timestamps in usec. Fails soft: no property -> no
+# resume fast path.
+resume_age_s() {
+  local out sig succ wakeup rest now
+  out=$(busctl --no-pager -- call org.freedesktop.login1 /org/freedesktop/login1 \
+    org.freedesktop.login1.Manager GetLastSleepProgress 2>/dev/null) || return 1
+  read -r sig succ wakeup _rest <<< "$out" || return 1
+  [[ "$wakeup" =~ ^[0-9]+$ ]] && (( wakeup > 0 )) || return 1
+  now=$(awk '{printf "%d", $1 * 1000000}' /proc/uptime)
+  echo $(( (now - wakeup) / 1000000 ))
+}
+
+# Fresh resume: the controller USB link drops over suspend and re-enumerates
+# a couple of seconds after wake, InputPlumber re-creates the composite
+# device on its default (xbox-elite) target and never restores deck-uhid,
+# and Steam keeps its pid (so the nudge path can't help). Wait out the
+# re-attach and shorten the confirmation sleep: the fault is confirmed by
+# definition here, and the 12s default is pure latency (~30s dead
+# controllers after every wake).
+resume_age=$(resume_age_s || true)
+if [[ -n "$resume_age" ]] && (( resume_age <= RESUME_WINDOW )); then
+  log "fresh resume (${resume_age}s ago): waiting up to ${RESUME_ATTACH_WAIT}s for controller re-attach"
+  for (( i = 0; i < RESUME_ATTACH_WAIT; i++ )); do
+    source_attached && break
+    sleep 1
+  done
+  CONFIRM_SLEEP=$RESUME_CONFIRM_SLEEP
+fi
 
 if ! source_attached; then
   # controllers detached: nothing to do

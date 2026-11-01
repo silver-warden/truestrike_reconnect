@@ -74,7 +74,11 @@ A `systemd` timer runs a check every 60s (and 20s after boot); a `systemd` sleep
 hook runs it again after resume. Each pass is cheap and idempotent:
 
 1. **Detached?** If the physical controller (USB `17ef:61eb`) isn't attached, do
-   nothing.
+   nothing — unless the machine resumed within the last 2 min, in which case
+   wait (briefly) for the controller's USB link to come back first, and use a
+   short confirmation sleep: on resume InputPlumber *always* re-creates the
+   controller on its default `xbox-elite` target and never restores
+   `deck-uhid`, so there's no point confirming it for 12s.
 2. **Nudge (once per Steam session).** If the `steam` process is new since the
    last run and has been up ≥15s, restart InputPlumber once so Steam
    re-enumerates. A cold boot, a resume and a Desktop↔Gaming switch each spawn a
@@ -96,6 +100,9 @@ Optional environment overrides (set via `systemctl edit lg2-controller-fix.servi
 | --- | --- | --- |
 | `LG2_STEAM_SETTLE` | `15` | Seconds a new `steam` process must be up before it's nudged (so Steam is actually listening). |
 | `LG2_CONFIRM_SLEEP` | `12` | How long the missing-node fault must persist before restarting. |
+| `LG2_RESUME_WINDOW` | `120` | Seconds after a resume during which the fast path (below) applies. |
+| `LG2_RESUME_ATTACH_WAIT` | `15` | Seconds to wait for the controller to re-attach after a resume. |
+| `LG2_RESUME_CONFIRM_SLEEP` | `4` | Confirmation sleep used on the resume fast path. |
 | `LG2_MAX_RESTARTS` | `5` | Max InputPlumber restarts per boot (loop guard). |
 
 ## What gets installed
