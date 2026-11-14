@@ -11,10 +11,10 @@
 #  1. Nudge: once per Steam session (new steam pid = cold boot OR a
 #     desktop<->gaming switch), restart InputPlumber so Steam re-enumerates the
 #     gamepad. Steam can miss the virtual gamepad during InputPlumber's target
-#     churn even though the node exists, which the node check below can't see.
-#  2. Missing-node: physical Legion controller attached (USB 17ef:61eb) but NO
-#     virtual gamepad (no js handler under /devices/virtual/input/) persisting
-#     across a confirmation re-check -> restart InputPlumber.
+#     churn even though the target exists, which the target check below can't see.
+#  2. Missing-target: physical Legion controller attached (USB 17ef:61eb) but
+#     InputPlumber exposes NO gamepad target, persisting across a confirmation
+#     re-check -> restart InputPlumber.
 set -u
 
 TAG=lg2-controller-fix
@@ -25,6 +25,7 @@ CONFIRM_SLEEP=${LG2_CONFIRM_SLEEP:-12}
 MAX_RESTARTS_PER_BOOT=${LG2_MAX_RESTARTS:-5}
 STEAM_SETTLE=${LG2_STEAM_SETTLE:-15}
 NUDGE_STATE="$STATE_DIR/nudged_pid"
+NUDGE_DURING_GAMES=${LG2_NUDGE_DURING_GAMES:-0}
 RESUME_WINDOW=${LG2_RESUME_WINDOW:-120}
 RESUME_ATTACH_WAIT=${LG2_RESUME_ATTACH_WAIT:-15}
 RESUME_CONFIRM_SLEEP=${LG2_RESUME_CONFIRM_SLEEP:-4}
@@ -42,13 +43,17 @@ source_attached() {
   return 1
 }
 
+# InputPlumber's gamepad target is not reliably an evdev "js" node: the normal
+# deck-uhid target is a uhid hidraw device (28de:12fb) with no js handler.
+# Looking for js nodes therefore goes false whenever Steam is driving that
+# target directly (i.e. while a game is running), and the watchdog then
+# restarts InputPlumber mid-game -- which games report as a controller
+# disconnect. Ask InputPlumber for its actual target list instead.
 virtual_gamepad_present() {
-  awk '
-    /^S: Sysfs=\/devices\/virtual\/input\// { v = 1 }
-    /^H: Handlers=.*js[0-9]/ && v           { found = 1; exit }
-    /^$/                                      { v = 0 }
-    END { exit !found }
-  ' /proc/bus/input/devices
+  busctl --no-pager get-property org.shadowblip.InputPlumber \
+      /org/shadowblip/InputPlumber/CompositeDevice0 \
+      org.shadowblip.Input.CompositeDevice TargetDevices 2>/dev/null \
+    | grep -q 'devices/target/gamepad'
 }
 
 # Seconds since logind reported a resume completed (0 = never slept this
@@ -98,19 +103,28 @@ fi
 steam_pid() { pgrep -n -u deck -x steam 2>/dev/null; }
 steam_age() { ps -o etimes= -p "$1" 2>/dev/null | tr -d ' '; }
 
+# A running Steam game keeps a "SteamLaunch AppId=" wrapper process for its
+# lifetime; restarting InputPlumber under one shows up in-game as a controller
+# disconnect, so defer the nudge until Steam is idle again.
+game_running() { pgrep -u deck -f 'SteamLaunch AppId=' >/dev/null 2>&1; }
+
 spid=$(steam_pid)
 if [[ -n "$spid" && "$spid" != "$(cat "$NUDGE_STATE" 2>/dev/null)" ]]; then
   # only nudge once Steam has settled, else it isn't listening yet and we'd
   # burn the one nudge for this session; skip (without marking) and retry next tick
   age=$(steam_age "$spid"); age=${age:-999}
   if (( age >= STEAM_SETTLE )); then
-    nudge_budget=$(cat "$STATE_DIR/restarts" 2>/dev/null || echo 0)
-    if (( nudge_budget < MAX_RESTARTS_PER_BOOT )); then
-      echo "$spid" > "$NUDGE_STATE"
-      echo "$((nudge_budget + 1))" > "$STATE_DIR/restarts"
-      log "Steam session pid $spid (age ${age}s) -> nudging InputPlumber so Steam re-enumerates the gamepad (restart #$((nudge_budget + 1))/$MAX_RESTARTS_PER_BOOT this boot)"
-      systemctl restart inputplumber
-      exit 0
+    if [[ "$NUDGE_DURING_GAMES" == 0 ]] && game_running; then
+      : # don't interrupt a running game; retried once the game exits
+    else
+      nudge_budget=$(cat "$STATE_DIR/restarts" 2>/dev/null || echo 0)
+      if (( nudge_budget < MAX_RESTARTS_PER_BOOT )); then
+        echo "$spid" > "$NUDGE_STATE"
+        echo "$((nudge_budget + 1))" > "$STATE_DIR/restarts"
+        log "Steam session pid $spid (age ${age}s) -> nudging InputPlumber so Steam re-enumerates the gamepad (restart #$((nudge_budget + 1))/$MAX_RESTARTS_PER_BOOT this boot)"
+        systemctl restart inputplumber
+        exit 0
+      fi
     fi
   fi
 fi
@@ -124,18 +138,18 @@ fi
 # Fault seen once -> confirm it persists (avoids racing transient re-creation)
 sleep "$CONFIRM_SLEEP"
 if virtual_gamepad_present; then
-  log "virtual gamepad re-appeared on re-check; no action"
+  log "InputPlumber gamepad target re-appeared on re-check; no action"
   exit 0
 fi
 
 restarts=$(cat "$STATE_DIR/restarts" 2>/dev/null || echo 0)
 if (( restarts >= MAX_RESTARTS_PER_BOOT )); then
-  log "controllers attached, virtual gamepad missing, but restart budget ($MAX_RESTARTS_PER_BOOT/boot) exhausted; giving up"
+  log "controllers attached, InputPlumber gamepad target missing, but restart budget ($MAX_RESTARTS_PER_BOOT/boot) exhausted; giving up"
   exit 1
 fi
 
 restarts=$((restarts + 1))
 echo "$restarts" > "$STATE_DIR/restarts"
-log "controllers attached and virtual gamepad MISSING for >${CONFIRM_SLEEP}s -> restarting InputPlumber (restart #$restarts/$MAX_RESTARTS_PER_BOOT this boot)"
+log "controllers attached and InputPlumber gamepad target MISSING for >${CONFIRM_SLEEP}s -> restarting InputPlumber (restart #$restarts/$MAX_RESTARTS_PER_BOOT this boot)"
 systemctl restart inputplumber
 exit 0

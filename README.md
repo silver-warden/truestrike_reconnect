@@ -56,8 +56,8 @@ this tool just does that automatically.
 
 Two distinct causes, found by digging through `journalctl`:
 
-1. **Missing target.** InputPlumber comes up without ever creating the virtual
-   gamepad node.
+1. **Missing target.** InputPlumber comes up without ever creating its virtual
+   gamepad target.
 2. **Enumeration race.** InputPlumber churns its gamepad target
    at startup (`xbox-elite` → `deck-uhid`) on cold boot, on resume, **and on
    every Desktop ↔ Gaming switch**. Steam Input enumerates gamepads when it
@@ -76,21 +76,26 @@ hook runs it again after resume. Each pass is cheap and idempotent:
 1. **Detached?** If the physical controller (USB `17ef:61eb`) isn't attached, do
    nothing — unless the machine resumed within the last 2 min, in which case
    wait (briefly) for the controller's USB link to come back first, and use a
-   short confirmation sleep: on resume InputPlumber *always* re-creates the
-   controller on its default `xbox-elite` target and never restores
-   `deck-uhid`, so there's no point confirming it for 12s.
+   short confirmation sleep: the resume re-attach path is well understood, so
+   there's no point confirming a missing target for 12s.
 2. **Nudge (once per Steam session).** If the `steam` process is new since the
    last run and has been up ≥15s, restart InputPlumber once so Steam
    re-enumerates. A cold boot, a resume and a Desktop↔Gaming switch each spawn a
    *new* `steam` pid, so one rule covers them all — including the race above.
-3. **Missing-target recovery.** If no virtual gamepad node exists and that
-   persists across a 12s confirmation re-check, restart InputPlumber.
+   The nudge is deferred while a game is running, so it can't cause an in-game
+   controller disconnect; it fires the first time Steam is idle again.
+3. **Missing-target recovery.** InputPlumber is asked over D-Bus whether its
+   composite device still has a gamepad target. If it doesn't, and that
+   persists across a 12s confirmation re-check, restart InputPlumber. (The
+   target is normally a uhid/hidraw device, not an evdev `js` node, so scanning
+   `/proc/bus/input/devices` produced false "missing" results during gameplay.)
 4. **Loop guard.** All restarts share a per-boot budget so a genuinely broken
    system can't thrash.
 
 A nudge restarts **only InputPlumber** — it never touches Steam, so it can't
 close your session or kick you out of a game. Worst case is a ~1s controller
 blink while Steam is loading, and it fires once per session, not continuously.
+While a game is running the nudge waits for Steam to become idle instead.
 
 ## Configuration
 
@@ -99,7 +104,8 @@ Optional environment overrides (set via `systemctl edit lg2-controller-fix.servi
 | Variable | Default | Meaning |
 | --- | --- | --- |
 | `LG2_STEAM_SETTLE` | `15` | Seconds a new `steam` process must be up before it's nudged (so Steam is actually listening). |
-| `LG2_CONFIRM_SLEEP` | `12` | How long the missing-node fault must persist before restarting. |
+| `LG2_NUDGE_DURING_GAMES` | `0` | Set to `1` to allow the once-per-session nudge to restart InputPlumber while a game is running (games will show a controller disconnect blink). |
+| `LG2_CONFIRM_SLEEP` | `12` | How long the missing-target fault must persist before restarting. |
 | `LG2_RESUME_WINDOW` | `120` | Seconds after a resume during which the fast path (below) applies. |
 | `LG2_RESUME_ATTACH_WAIT` | `15` | Seconds to wait for the controller to re-attach after a resume. |
 | `LG2_RESUME_CONFIRM_SLEEP` | `4` | Confirmation sleep used on the resume fast path. |
